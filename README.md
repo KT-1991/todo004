@@ -40,3 +40,15 @@ npm run dev
 ```sh
 npm run build
 ```
+
+## Deploy to GitHub Pages
+
+This repository is configured to deploy with GitHub Actions.
+
+1. Push your changes to the `main` branch.
+2. In GitHub, open `Settings` > `Pages` and set `Source` to `GitHub Actions`.
+3. Wait for the `Deploy static content to Pages` workflow to finish.
+
+Notes:
+- The app uses Vite `base: '/todo004/'` in `vite.config.ts`.
+- If your repository name is different, update that `base` path.
