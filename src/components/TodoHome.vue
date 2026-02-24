@@ -50,12 +50,6 @@ function toDayText(dateKey: string): string {
 
 const todayDateText = computed(() => toDayText(todayKey.value))
 
-function normalizedDay(value: string | null): string | null {
-  if (!value) return null
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
-  return value.slice(0, 10)
-}
-
 function sortedByTitle(items: TodoItem[]): TodoItem[] {
   return [...items].sort((a, b) => a.title.localeCompare(b.title, 'ja'))
 }
@@ -105,10 +99,8 @@ const completedTodayTasks = computed(() => {
   const rows: TodoItem[] = []
 
   for (const category of categories.value) {
-    const todos = todoStore.currentTodo[category.id] ?? []
+    const todos = todoStore.todayCompletedTodo[category.id] ?? []
     for (const todo of todos) {
-      if (!todo.completedAt) continue
-      if (normalizedDay(todo.completedAt) !== todayKey.value) continue
       rows.push(todo)
     }
   }

@@ -46,6 +46,7 @@ export const useTodoStore = defineStore('todo', {
     listCategory: [] as TodoCategory[],
     currentTodo: {} as Record<number, TodoItem[]>,
     completedTodo: {} as Record<number, TodoItem[]>,
+    todayCompletedTodo: {} as Record<number, TodoItem[]>,
     suggestions: [] as string[],
     isSortedByDateAsc: true,
     isSortedByTitleAsc: true,
@@ -155,9 +156,11 @@ export const useTodoStore = defineStore('todo', {
     async initTodo(hasCompletedData: boolean, limit: number, offset: number) {
       const nextCurrentTodo: Record<number, TodoItem[]> = {}
       const nextCompletedTodo: Record<number, TodoItem[]> = {}
+      const nextTodayCompletedTodo: Record<number, TodoItem[]> = {}
       for (const category of this.listCategory) {
         nextCurrentTodo[category.id] = []
         nextCompletedTodo[category.id] = []
+        nextTodayCompletedTodo[category.id] = []
       }
 
       const activeRows = await executeQuery(
@@ -188,9 +191,36 @@ export const useTodoStore = defineStore('todo', {
         })
       }
 
+      const todayCompletedRows = await executeQuery(
+        `
+        SELECT id, id_category, title, detail, do_at, created_at, completed_at, deleted_at
+        FROM tr_todo
+        WHERE completed_at IS NOT NULL
+          AND substr(completed_at, 1, 10) = ?
+        ORDER BY completed_at DESC, id DESC
+        `,
+        [todayDateKey()],
+      )
+
+      for (const row of todayCompletedRows.result.resultRows ?? []) {
+        const categoryId = Number(row[1])
+        if (!nextTodayCompletedTodo[categoryId]) continue
+        nextTodayCompletedTodo[categoryId].push({
+          id: Number(row[0]),
+          idCategory: categoryId,
+          title: String(row[2] ?? ''),
+          detail: String(row[3] ?? ''),
+          doAt: normalizeDateValue(row[4]),
+          createAt: String(row[5] ?? new Date().toISOString()),
+          completedAt: row[6] == null ? null : String(row[6]),
+          deletedAt: row[7] == null ? null : String(row[7]),
+        })
+      }
+
       if (!hasCompletedData) {
         this.currentTodo = nextCurrentTodo
         this.completedTodo = nextCompletedTodo
+        this.todayCompletedTodo = nextTodayCompletedTodo
         return
       }
 
@@ -225,6 +255,7 @@ export const useTodoStore = defineStore('todo', {
 
       this.currentTodo = nextCurrentTodo
       this.completedTodo = nextCompletedTodo
+      this.todayCompletedTodo = nextTodayCompletedTodo
     },
 
     async addTodo(idCategory: number, title: string, detail: string, doAtInput: string | null) {
