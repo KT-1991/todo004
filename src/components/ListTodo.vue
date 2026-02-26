@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { CATEGORY_TYPE } from '@/scripts/const'
 import { toDateKey } from '@/scripts/utils'
 import { useTodoStore, type TodoCategory, type TodoItem } from '@/stores/todo'
@@ -19,6 +19,10 @@ const MORPH_CLEANUP_DELAY_MS = 500
 const columnWidths = ref<Record<number, number>>({})
 const MIN_COLUMN_WIDTH = 220
 const DEFAULT_COLUMN_WIDTH = 300
+const COLUMN_WIDTH_STORAGE_KEY = 'taskboard:list-column-widths:v1'
+const FALLBACK_SPLITTER_WIDTH = 10
+const listColumnsRef = ref<HTMLElement | null>(null)
+const hasInitializedColumnWidths = ref(false)
 
 const sortPanelOpen = ref(false)
 const sortKey = ref<'date' | 'title'>('date')
@@ -45,9 +49,11 @@ onMounted(async () => {
   if (todoStore.listCategory.length === 0) {
     await todoStore.init()
   }
+  await syncColumnWidths()
 })
 
 onBeforeUnmount(() => {
+  persistColumnWidths()
   clearTimers()
   endResize()
 })
@@ -79,6 +85,13 @@ watch(
 )
 
 const categories = computed(() => todoStore.listCategory)
+
+watch(
+  () => categories.value.map((category) => category.id).join(','),
+  () => {
+    void syncColumnWidths()
+  },
+)
 
 function isDatedCategory(category: TodoCategory): boolean {
   return category.categoryType === CATEGORY_TYPE.DATED
@@ -124,6 +137,160 @@ function categoryTypeLabel(category: TodoCategory): string {
 
 function columnWidth(categoryId: number): number {
   return columnWidths.value[categoryId] ?? DEFAULT_COLUMN_WIDTH
+}
+
+function isValidColumnWidth(width: unknown): width is number {
+  return typeof width === 'number' && Number.isFinite(width) && width >= MIN_COLUMN_WIDTH
+}
+
+function loadPersistedColumnWidths(): Record<number, number> {
+  try {
+    const raw = window.localStorage.getItem(COLUMN_WIDTH_STORAGE_KEY)
+    if (!raw) return {}
+
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+
+    const restored: Record<number, number> = {}
+    for (const [idText, widthLike] of Object.entries(parsed as Record<string, unknown>)) {
+      const id = Number(idText)
+      const width = Number(widthLike)
+      if (!Number.isInteger(id) || !isValidColumnWidth(width)) continue
+      restored[id] = Math.round(width)
+    }
+    return restored
+  }
+  catch {
+    return {}
+  }
+}
+
+function persistColumnWidths() {
+  try {
+    const payload: Record<string, number> = {}
+    for (const category of categories.value) {
+      const width = columnWidths.value[category.id]
+      if (!isValidColumnWidth(width)) continue
+      payload[String(category.id)] = Math.round(width)
+    }
+    window.localStorage.setItem(COLUMN_WIDTH_STORAGE_KEY, JSON.stringify(payload))
+  }
+  catch {
+    // Ignore persistence errors (e.g. private mode or storage quota)
+  }
+}
+
+function listColumnsInnerWidth(): number {
+  const element = listColumnsRef.value
+  if (!element) return 0
+
+  const style = window.getComputedStyle(element)
+  const paddingLeft = Number.parseFloat(style.paddingLeft) || 0
+  const paddingRight = Number.parseFloat(style.paddingRight) || 0
+  return Math.max(0, element.clientWidth - paddingLeft - paddingRight)
+}
+
+function splitterTotalWidth(categoryCount: number): number {
+  const element = listColumnsRef.value
+  if (!element) return categoryCount * FALLBACK_SPLITTER_WIDTH
+
+  const splitters = Array.from(element.querySelectorAll<HTMLElement>('.column_splitter'))
+  if (splitters.length === 0) return categoryCount * FALLBACK_SPLITTER_WIDTH
+  return splitters.reduce((sum, splitter) => sum + splitter.offsetWidth, 0)
+}
+
+function flexGapWidth(): number {
+  const element = listColumnsRef.value
+  if (!element) return 0
+
+  const style = window.getComputedStyle(element)
+  const gapText = style.columnGap && style.columnGap !== 'normal' ? style.columnGap : style.gap
+  const gap = Number.parseFloat(gapText)
+  return Number.isFinite(gap) ? gap : 0
+}
+
+function autoColumnWidths(categoryIds: number[]): Record<number, number> {
+  const count = categoryIds.length
+  if (count === 0) return {}
+
+  const totalInnerWidth = listColumnsInnerWidth()
+  const splitterWidth = splitterTotalWidth(count)
+  const gapWidth = flexGapWidth()
+  const totalItemCount = count * 2
+  const totalGapWidth = Math.max(0, totalItemCount - 1) * gapWidth
+  const availableWidth = Math.max(0, totalInnerWidth - splitterWidth - totalGapWidth)
+  const minTotalWidth = MIN_COLUMN_WIDTH * count
+
+  const nextWidths: Record<number, number> = {}
+  if (availableWidth <= minTotalWidth) {
+    for (const id of categoryIds) nextWidths[id] = MIN_COLUMN_WIDTH
+    return nextWidths
+  }
+
+  const baseWidth = Math.floor(availableWidth / count)
+  let remainder = Math.round(availableWidth - baseWidth * count)
+  for (const id of categoryIds) {
+    const width = baseWidth + (remainder > 0 ? 1 : 0)
+    nextWidths[id] = Math.max(MIN_COLUMN_WIDTH, width)
+    if (remainder > 0) remainder -= 1
+  }
+  return nextWidths
+}
+
+async function syncColumnWidths() {
+  const categoryIds = categories.value.map((category) => category.id)
+  if (categoryIds.length === 0) {
+    columnWidths.value = {}
+    hasInitializedColumnWidths.value = true
+    persistColumnWidths()
+    return
+  }
+
+  await nextTick()
+  await waitNextFrame()
+
+  if (!hasInitializedColumnWidths.value) {
+    const restored = loadPersistedColumnWidths()
+    const auto = autoColumnWidths(categoryIds)
+    const merged: Record<number, number> = {}
+    let hasRestored = false
+
+    for (const id of categoryIds) {
+      const width = restored[id]
+      if (isValidColumnWidth(width)) {
+        merged[id] = Math.round(width)
+        hasRestored = true
+      }
+      else {
+        merged[id] = auto[id] ?? DEFAULT_COLUMN_WIDTH
+      }
+    }
+
+    columnWidths.value = merged
+    hasInitializedColumnWidths.value = true
+    if (!hasRestored) persistColumnWidths()
+    return
+  }
+
+  const auto = autoColumnWidths(categoryIds)
+  const nextWidths: Record<number, number> = {}
+  let changed = Object.keys(columnWidths.value).length !== categoryIds.length
+
+  for (const id of categoryIds) {
+    const width = columnWidths.value[id]
+    if (isValidColumnWidth(width)) {
+      nextWidths[id] = Math.round(width)
+    }
+    else {
+      nextWidths[id] = auto[id] ?? DEFAULT_COLUMN_WIDTH
+      changed = true
+    }
+  }
+
+  if (changed) {
+    columnWidths.value = nextWidths
+    persistColumnWidths()
+  }
 }
 
 function categoryAccent(index: number): string {
@@ -434,12 +601,14 @@ function onResizePointerMove(event: PointerEvent) {
 }
 
 function endResize() {
+  const wasResizing = resizeState.value !== null
   resizeState.value = null
   window.removeEventListener('pointermove', onResizePointerMove)
   window.removeEventListener('pointerup', endResize)
   window.removeEventListener('pointercancel', endResize)
   document.body.style.cursor = ''
   document.body.style.userSelect = ''
+  if (wasResizing) persistColumnWidths()
 }
 
 function startResize(categoryId: number, event: PointerEvent) {
@@ -515,7 +684,7 @@ function startResize(categoryId: number, event: PointerEvent) {
       </div>
     </div>
 
-    <div class="list_columns">
+    <div ref="listColumnsRef" class="list_columns">
       <template v-for="(category, index) in categories" :key="category.id">
         <article
           class="category_column"

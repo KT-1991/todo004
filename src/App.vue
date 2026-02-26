@@ -69,13 +69,19 @@ onMounted(async () => {
   --ui-shadow: 0 10px 28px rgba(15, 23, 42, 0.1);
 
   min-height: 100vh;
+  width: 100%;
+  min-width: 0;
   display: grid;
   grid-template-rows: auto 1fr;
   background: var(--ui-bg);
   color: var(--ui-text);
+  overflow-x: hidden;
 }
 
 .top_menu {
+  position: sticky;
+  top: 0;
+  z-index: 40;
   border-bottom: 1px solid var(--ui-border);
   padding: 10px 12px;
   background: linear-gradient(120deg, #f9fbff, #eef3f9);
@@ -131,13 +137,16 @@ onMounted(async () => {
 }
 
 .shell_main {
+  min-width: 0;
   min-height: 0;
   padding: 12px;
   display: flex;
+  overflow: hidden;
 }
 
 .main_stage {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius);

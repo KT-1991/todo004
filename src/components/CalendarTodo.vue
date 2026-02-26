@@ -22,6 +22,8 @@ const dateColumnWidth = ref(140)
 const MIN_DATE_COLUMN_WIDTH = 120
 const MIN_CATEGORY_COLUMN_WIDTH = 180
 const DEFAULT_CATEGORY_COLUMN_WIDTH = 240
+const CALENDAR_WIDTH_STORAGE_KEY = 'taskboard:calendar-column-widths:v1'
+const hasInitializedCalendarWidths = ref(false)
 
 type ResizeTarget = { kind: 'date' } | { kind: 'category'; categoryId: number }
 
@@ -37,9 +39,11 @@ onMounted(async () => {
   if (todoStore.listCategory.length === 0) {
     await todoStore.init()
   }
+  syncCalendarWidths()
 })
 
 onBeforeUnmount(() => {
+  persistCalendarWidths()
   clearTimers()
   endResize()
 })
@@ -73,6 +77,123 @@ watch(
 const datedCategories = computed(() =>
   todoStore.listCategory.filter((category) => category.categoryType === CATEGORY_TYPE.DATED),
 )
+
+watch(
+  () => datedCategories.value.map((category) => category.id).join(','),
+  () => {
+    syncCalendarWidths()
+  },
+)
+
+function isValidDateColumnWidth(width: unknown): width is number {
+  return typeof width === 'number' && Number.isFinite(width) && width >= MIN_DATE_COLUMN_WIDTH
+}
+
+function isValidCategoryColumnWidth(width: unknown): width is number {
+  return typeof width === 'number' && Number.isFinite(width) && width >= MIN_CATEGORY_COLUMN_WIDTH
+}
+
+type PersistedCalendarWidths = {
+  dateWidth?: number
+  categoryWidths?: Record<string, unknown>
+}
+
+function loadPersistedCalendarWidths(): { dateWidth?: number; categoryWidths: Record<number, number> } {
+  try {
+    const raw = window.localStorage.getItem(CALENDAR_WIDTH_STORAGE_KEY)
+    if (!raw) return { categoryWidths: {} }
+
+    const parsed = JSON.parse(raw) as PersistedCalendarWidths
+    if (!parsed || typeof parsed !== 'object') return { categoryWidths: {} }
+
+    const restoredCategoryWidths: Record<number, number> = {}
+    const categoryWidthsLike = parsed.categoryWidths
+    if (categoryWidthsLike && typeof categoryWidthsLike === 'object') {
+      for (const [idText, widthLike] of Object.entries(categoryWidthsLike)) {
+        const id = Number(idText)
+        const width = Number(widthLike)
+        if (!Number.isInteger(id) || !isValidCategoryColumnWidth(width)) continue
+        restoredCategoryWidths[id] = Math.round(width)
+      }
+    }
+
+    const dateWidth = Number(parsed.dateWidth)
+    return {
+      dateWidth: isValidDateColumnWidth(dateWidth) ? Math.round(dateWidth) : undefined,
+      categoryWidths: restoredCategoryWidths,
+    }
+  }
+  catch {
+    return { categoryWidths: {} }
+  }
+}
+
+function persistCalendarWidths() {
+  try {
+    const payload: { dateWidth: number; categoryWidths: Record<string, number> } = {
+      dateWidth: Math.round(dateColumnWidth.value),
+      categoryWidths: {},
+    }
+
+    for (const category of datedCategories.value) {
+      const width = categoryWidths.value[category.id]
+      if (!isValidCategoryColumnWidth(width)) continue
+      payload.categoryWidths[String(category.id)] = Math.round(width)
+    }
+
+    window.localStorage.setItem(CALENDAR_WIDTH_STORAGE_KEY, JSON.stringify(payload))
+  }
+  catch {
+    // Ignore persistence errors (e.g. private mode or storage quota)
+  }
+}
+
+function syncCalendarWidths() {
+  const categoryIds = datedCategories.value.map((category) => category.id)
+
+  if (!hasInitializedCalendarWidths.value) {
+    const restored = loadPersistedCalendarWidths()
+    if (isValidDateColumnWidth(restored.dateWidth)) {
+      dateColumnWidth.value = restored.dateWidth
+    }
+
+    const merged: Record<number, number> = {}
+    let hasRestoredCategoryWidth = false
+    for (const id of categoryIds) {
+      const restoredWidth = restored.categoryWidths[id]
+      if (isValidCategoryColumnWidth(restoredWidth)) {
+        merged[id] = restoredWidth
+        hasRestoredCategoryWidth = true
+      }
+      else {
+        merged[id] = DEFAULT_CATEGORY_COLUMN_WIDTH
+      }
+    }
+
+    categoryWidths.value = merged
+    hasInitializedCalendarWidths.value = true
+    if (!hasRestoredCategoryWidth) persistCalendarWidths()
+    return
+  }
+
+  const nextWidths: Record<number, number> = {}
+  let changed = Object.keys(categoryWidths.value).length !== categoryIds.length
+  for (const id of categoryIds) {
+    const width = categoryWidths.value[id]
+    if (isValidCategoryColumnWidth(width)) {
+      nextWidths[id] = Math.round(width)
+    }
+    else {
+      nextWidths[id] = DEFAULT_CATEGORY_COLUMN_WIDTH
+      changed = true
+    }
+  }
+
+  if (changed) {
+    categoryWidths.value = nextWidths
+    persistCalendarWidths()
+  }
+}
 
 function showDate(dateText: string): string {
   const [yearText, monthText, dayText] = dateText.split('-')
@@ -284,12 +405,14 @@ function onResizePointerMove(event: PointerEvent) {
 }
 
 function endResize() {
+  const wasResizing = resizeState.value !== null
   resizeState.value = null
   window.removeEventListener('pointermove', onResizePointerMove)
   window.removeEventListener('pointerup', endResize)
   window.removeEventListener('pointercancel', endResize)
   document.body.style.cursor = ''
   document.body.style.userSelect = ''
+  if (wasResizing) persistCalendarWidths()
 }
 
 function startResize(target: ResizeTarget, startWidth: number, event: PointerEvent) {
